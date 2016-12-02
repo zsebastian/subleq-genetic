@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace subleq_genetic
 {
@@ -10,7 +11,7 @@ namespace subleq_genetic
 	{
 		Random random = new Random();
 		const int ProgramLength = 256;
-		const int PopulationSize = 1024;
+		const int PopulationSize = 512;
 		const int Generations = 1024 * 256;
 		const float Culling = 0.5f;
 		const int MaxExecutionTicks = 512;
@@ -22,15 +23,24 @@ namespace subleq_genetic
 
 		static void Main(string[] args)
 		{
+			int minWorker, minIOC;
+			// Get the current settings.
+			ThreadPool.GetMinThreads(out minWorker, out minIOC);
+			if (!ThreadPool.SetMinThreads(20, minIOC))
+			{
+				Console.WriteLine("!ThreadPool.SetMinThreads(20, minIOC)");
+			}
 			var p = new Program();
 			p.Start();
 		}
 
-		class Fitness : IComparer<KeyValuePair<byte[], string>>
+		class Fitness : IComparer<KeyValuePair<byte[], Task<string>>>
 		{
-			public int Compare(KeyValuePair<byte[], string> x, KeyValuePair<byte[], string> y)
+			public int Compare(KeyValuePair<byte[], Task<string>> x, KeyValuePair<byte[], Task<string>> y)
 			{
-				return Levenshtein(x.Value, WantedResult).CompareTo(Levenshtein(y.Value, WantedResult));
+				x.Value.Wait();
+				y.Value.Wait();
+				return Levenshtein(x.Value.Result, WantedResult).CompareTo(Levenshtein(y.Value.Result, WantedResult));
 			}
 		}
 
@@ -42,8 +52,10 @@ namespace subleq_genetic
 				.Select((i) => RandomProgram()));
 			List<byte[]> nextPopulation = new List<byte[]>(Enumerable.Range(0, PopulationSize).Select((i) => new byte[ProgramLength * 2]));
 			List<byte[]> breeding = new List<byte[]>();
+			List<char[]> outputBytes = new List<char[]>(Enumerable.Range(0, PopulationSize).Select((i) => new char[MaxExecutionTicks]));
 
-			List<KeyValuePair<byte[], string>> results = new List<KeyValuePair<byte[], string>>(Enumerable.Range(0, PopulationSize).Select((i) => new KeyValuePair<byte[], string>()));
+			List<KeyValuePair<byte[], Task<string>>> results = 
+				new List<KeyValuePair<byte[], Task<string>>>(Enumerable.Range(0, PopulationSize).Select((i) => new KeyValuePair<byte[], Task<string>>()));
 
 			var genStringCount = Generations.ToString().Length;
 
@@ -52,13 +64,18 @@ namespace subleq_genetic
 				for (int i = 0; i < PopulationSize; ++i)
 				{
 					var bytes = population[i];
-					results[i] = new KeyValuePair<byte[], string>(bytes, Execute(bytes));
+					var output = outputBytes[i];
+					results[i] = new KeyValuePair<byte[], Task<string>>(bytes, Task.Factory.StartNew(() => Execute(bytes, output)));
 				}
 
 				results.Sort(fitness);
 				if (gen % 100 == 0)
 				{
-					Console.WriteLine("[{0}] \"{1}\", \"{2}\", \"{3}\", \"{4}\"", gen.ToString().PadLeft(genStringCount), results[0].Value, results[1].Value, results[2].Value, results[3].Value);
+					Console.WriteLine("[{0}] \"{1}\", \"{2}\", \"{3}\", \"{4}\"", gen.ToString().PadLeft(genStringCount), 
+							results[0].Value.Result, 
+							results[1].Value.Result, 
+							results[2].Value.Result, 
+							results[3].Value.Result);
 				}
 
 				fittest.Clear();
@@ -115,7 +132,8 @@ namespace subleq_genetic
 			for (int i = 0; i < PopulationSize; ++i)
 			{
 				var bytes = nextPopulation[i];
-				results[i] = new KeyValuePair<byte[], string>(bytes, Execute(bytes));
+				var output = outputBytes[i];
+				results[i] = new KeyValuePair<byte[], Task<string>>(bytes, Task.Factory.StartNew(() => Execute(bytes, output)));
 			}
 
 			results.Sort(fitness);
@@ -142,8 +160,7 @@ namespace subleq_genetic
 			return ret;
 		}
 
-		char[] output = new char[MaxOutputLength];
-		public string Execute(byte[] program)
+		public string Execute(byte[] program, char[] output)
 		{
 			int outputIndex = 0;
 			var memory = program.ToArray();
